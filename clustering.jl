@@ -1,7 +1,7 @@
 using LinearAlgebra
 
 mutable struct Cluster
-    orb_list::Int
+    orb_list::Vector{Int64}
     oei::Matrix{Float64}
     tei::Matrix{Float64}
     n_orb::Int
@@ -14,15 +14,23 @@ mutable struct Cluster
     Ham::Float64
     tdm::Dict{Any,Any}
     h_eff::Float64
-end
 
-function init!(cl::Cluster, bl::Int, n_elec::Tuple{Int,Int}, oei::Matrix{Float64}, tei::Matrix{Float64}, Sz::Union{Nothing,Float64}=nothing, S2::Union{Nothing,Float64}=nothing)
-    cl.orb_list = bl
-    cl.n_a = n_elec[1]
-    cl.n_b = n_elec[2]
-    cl.oei = oei
-    cl.tei = tei
-    cl.n_orb = size(oei, 1)
+
+    function init!(cl::Cluster, bl::Vector{Int64}, n_elec::Tuple{Int,Int}, oei::Matrix{Float64}, tei::Matrix{Float64}, Sz::Union{Nothing,Float64}=nothing, S2::Union{Nothing,Float64}=nothing)
+        cl.orb_list = bl
+        cl.n_a = n_elec[1]
+        cl.n_b = n_elec[2]
+        cl.oei = oei
+        cl.tei = tei
+        cl.n_orb = size(oei, 1)
+        cl.p_eval=nothing
+        cl.p_evec=nothing
+        cl.n_range=0
+        cl.S2=0.0
+        cl.Ham=0.0
+        cl.tdm=Dict{}
+        cl.heff=0.0
+    end
 end
 
 function tucker_vecs!(cl::Cluster, p::Matrix{Float64}, e::Vector{Float64})

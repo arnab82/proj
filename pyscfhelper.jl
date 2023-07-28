@@ -1,5 +1,6 @@
 using LinearAlgebra
 using PyCall
+scipy_csgraph=pyimport("scipy.sparse.csgraph")
 
 PySCF = pyimport("pyscf")
 
@@ -237,48 +238,49 @@ function get_eff_for_casci(n_start, n_stop, h, g)
     return constant, eff
 end
 
-helper = PyscfHelper()
-molecule = "H 0.0 0.0 0.0; H 0.0 0.0 0.74"
-charge = 0
-spin = 0
-basis_set = "sto-3g"
-init(helper, molecule, charge, spin, basis_set, orb_basis="boys", cas=true,cas_nstart=1, cas_nstop=2,cas_nel=2)
+# helper = PyscfHelper()
+# molecule = "H 0.0 0.0 0.0; H 0.0 0.0 0.74"
+# charge = 0
+# spin = 0
+# basis_set = "sto-3g"
+# init(helper, molecule, charge, spin, basis_set, orb_basis="boys", cas=true,cas_nstart=1, cas_nstop=2,cas_nel=2)
 
-# Access the results
-println("Total SCF energy: ", helper.Escf)
-println("Orbital coefficient matrix: ")
-println(helper.C)
-println("One-electron integrals: ")
-println(helper.h)
-println("Two-electron integrals: ")
-println(helper.g)
-println("Overlap matrix: ")
-println(helper.S)
-println("Coulomb matrix: ")
-println(helper.J)
-println("Exchange matrix: ")
-println(helper.K)
-function run_fci_pyscf(h, g, nelec, ecore=0, nroots=1)
+# # Access the results
+# println("Total SCF energy: ", helper.Escf)
+# println("Orbital coefficient matrix: ")
+# println(helper.C)
+# println("One-electron integrals: ")
+# println(helper.h)
+# println("Two-electron integrals: ")
+# println(helper.g)
+# println("Overlap matrix: ")
+# println(helper.S)
+# println("Coulomb matrix: ")
+# println(helper.J)
+# println("Exchange matrix: ")
+# println(helper.K)
+function run_fci_pyscf(h, g, nelec, ecore, nroots=1)
     # FCI
     cisolver = PySCF.fci.direct_spin1.FCI()
     efci, ci = cisolver.kernel(h, g, size(h, 2), nelec, ecore=ecore, nroots=nroots, verbose=100)
     fci_dim = size(ci, 1) * size(ci, 2)
     d1 = cisolver.make_rdm1(ci, size(h, 2), nelec)
     println(d1)
-    println(" FCI:        %12.8f Dim:%6d" % (efci, fci_dim))
-    println("FCI %10.8f" % efci)
+    println(" FCI:        %12.8f Dim:%6d" , efci, fci_dim)
+    println("FCI %10.8f" , efci)
     
     return efci, fci_dim
 end
-function run_hci_pyscf(h, g, nelec, ecore=0, select_cutoff=5e-4, ci_cutoff=5e-4)
+function run_hci_pyscf(h, g, nelec, ecore, select_cutoff=5e-4, ci_cutoff=5e-4)
     # Heat-bath CI
-    cisolver = PySCF.hci.SCI()
+    hci=pyimport(pyscf.hci.hci)#this is not working
+    cisolver = hci.SCI()
     cisolver.select_cutoff = select_cutoff
     cisolver.ci_coeff_cutoff = ci_cutoff
     ehci, civec = cisolver.kernel(h, g, size(h, 2), nelec, ecore=ecore, verbose=4)
     hci_dim = size(civec[1], 1)
-    println(" HCI:        %12.8f Dim:%6d" % (ehci, hci_dim))
-    println("HCI %10.8f" % ehci)
+    println(" HCI:        %12.8f Dim:%6d" , ehci, hci_dim)
+    println("HCI %10.8f" , ehci)
     
     return ehci, hci_dim
 end
@@ -304,9 +306,9 @@ function e1_order(h, cut_off)
     hnew = abs.(h)
     hnew[hnew .< cut_off] .= 0
     fill!(Diagonal(hnew), 0)
-    
-    hnew_sparse = sparse(hnew)
-    idx = reverse_cuthill_mckee(hnew_sparse)
+    scipy_sparse=pyimport("scipy.sparse")
+    hnew_sparse = scipy_sparse.csc_matrix(hnew)
+    idx = scipy_csgraph.reverse_cuthill_mckee(hnew_sparse)
     idx = idx .+ 1
     
     hnew = hnew[:, idx]

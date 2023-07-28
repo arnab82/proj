@@ -1,3 +1,5 @@
+using Einsum
+
 function get_hubbard_params(n_site, beta, U, pbc=true)
     """
     Generates the parameters for a linear Hubbard model.
@@ -90,10 +92,10 @@ function run_hubbard_scf(h_local, g_local, closed_shell_nel, do_scf=true)
 
     h = C' * h_local * C
 
-    g = @einsum pqrsl, pl -> lqrs g_local, C
-    g = @einsum lmrsq, qm -> lmrs g, C
-    g = @einsum lmnsr, rn -> lmns g, C
-    g = @einsum lmno, so -> lmno g, C
+    @einsum g[l,q,r,s]=g_local[p,q,r,s]*C[p,l] 
+    @einsum g[l,m,r,s]=g[l,q,r,s]*C[q,m]
+    @einsum g[l,m,n,s]=g[l,m,r,s]*C[r,n] 
+    @einsum g[l,m,n,o]=g[l,m,n,s]*C[s,o] 
 
     o = 1:closed_shell_nel
     v = closed_shell_nel+1:size(h_local, 1)

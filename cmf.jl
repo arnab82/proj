@@ -1,6 +1,8 @@
 using LinearAlgebra
 using SparseArrays
-
+using PyCall
+using Einsum
+using Printf
 function get_cluster_eri(bl, h, g)
     """This code defines a function get_cluster_eri that takes bl (a list or array),
      h (a 2D matrix), and g (a 4D tensor) as input. It initializes ha and ga as arrays of zeros 
@@ -56,18 +58,18 @@ function form_Heff(blocks, Cluster, tei)
     n_blocks = length(blocks)
     VJa = Dict()
     VKa = Dict()
-
     for a in 1:n_blocks
         for b in 1:n_blocks
             if b != a
                 gaabb = get_block_eri_2(blocks, Cluster, tei, a, a, b, b)
                 gabba = get_block_eri_2(blocks, Cluster, tei, a, b, b, a)
+                Jtemp = einsum("prqs,qs->pr", gaabb, Cluster[b].tdm["ca_aa"])
+                Ktemp = einsum("psqr,qs->pr", gabba, Cluster[b].tdm["ca_aa"])
+                # Jtemp = sum(gaabb .* Cluster[b].tdm["ca_aa"], dims=(3, 4))
+                # Ktemp = sum(gabba .* Cluster[b].tdm["ca_aa"], dims=(3, 4))
 
-                Jtemp = sum(gaabb .* Cluster[b].tdm["ca_aa"], dims=(3, 4))
-                Ktemp = sum(gabba .* Cluster[b].tdm["ca_aa"], dims=(3, 4))
-
-                VJa[(a, b)] = Jtemp
-                VKa[(a, b)] = Ktemp
+                VJa[(a, b)] = Jtemp#coulomb integral
+                VKa[(a, b)] = Ktemp#exchange integral
             end
         end
     end
@@ -77,7 +79,7 @@ end
 function run_cmf_iter(blocks, Cluster, tei)
     """This code defines a function run_cmf_iter that takes blocks (an array), Cluster (an array of Cluster objects),
      and tei (a 4D tensor) as input. It initializes hnew and mat as dictionaries to store intermediate results. 
-     bl_vec is also initialized as a dictionary, although it is not used in the code provided. 
+     bl_vec is also initialized as a dictionary. 
      The variable EE is initialized as 0.0.
     The code then iterates over the indices a from 1 to n_blocks. Inside the loop, it calculates 
     the effective Hamiltonian heff by summing the contributions from VJa and VKa matrices. 
@@ -103,20 +105,20 @@ function run_cmf_iter(blocks, Cluster, tei)
         heff = copy(Cluster[a].oei)
         for b in 1:n_blocks
             if a != b
-                heff += 2 * VJa[(a, b)] - VKa[(a, b)]
+                heff += 2 * VJa[(a, b)] - VKa[(a, b)]#effective hamiltonian
             end
         end
-
+        # println("effective hamiltonian")
+        # display(heff)
         norb_a = Cluster[a].n_orb
-        ha = Cluster[a].oei
-        ga = Cluster[a].tei
+        ha = Cluster[a].oei#one-electron part
+        ga = Cluster[a].tei#two-electron part
 
-        n_a = Cluster[a].n_a
-        n_b = Cluster[a].n_b
+        n_a = Cluster[a].n_a#alpha electrons
+        n_b = Cluster[a].n_b#beta electrons
 
         if n_a + n_b != 0
-            using PyCall
-            @pyimport pyscf.fci as fci
+            fci=pyimport("pyscf.fci")
 
             cisolver = fci.direct_spin0.FCI()
             efci, ci = cisolver.kernel(heff, ga, norb_a, (n_a, n_b), ecore=0, nroots=1, verbose=100)
@@ -131,7 +133,7 @@ function run_cmf_iter(blocks, Cluster, tei)
             fci_dim = size(ci, 1) * size(ci, 2)
             ci = reshape(ci, (1, fci_dim))
         end
-
+        #make the density matrix
         d1, d2 = cisolver.make_rdm1s(ci, size(ha, 2), (n_a, n_b))
         Cluster[a].store_tdm("ca_aa", d1)
         Cluster[a].store_tdm("ca_bb", d2)
@@ -142,7 +144,7 @@ function run_cmf_iter(blocks, Cluster, tei)
             ee, ci = eigen(0.5 * d2 + 0.5 * dd)
         end
 
-        Cluster[a].tucker_vecs(ci, efci)
+        Cluster[a].tucker_vecs(ci, efci)#only one P vector is considered
 
         EE += efci
 
@@ -176,25 +178,27 @@ function double_counting(blocks, Cluster, eri)
 
                 Pi = Cluster[a].tdm["ca_aa"]
                 Pj = Cluster[b].tdm["ca_aa"]
-
-                Eij += sum(gaabb .* Pi .* Pj)
-                Eij -= sum(gabba .* Pi .* Pj)
+                @einsum Eij+=gaabb[p,q,r,s]*Pi[p,q]*Pj[r,s]
+                @einsum Eij-=gabba[p,s,r,q]*Pi[p,q]*Pj[r,s]
+                # Eij += sum(gaabb .* Pi .* Pj)
+                # Eij -= sum(gabba .* Pi .* Pj)
 
                 Pi = Cluster[a].tdm["ca_bb"]
                 Pj = Cluster[b].tdm["ca_bb"]
-
-                Eij += sum(gaabb .* Pi .* Pj)
-                Eij -= sum(gabba .* Pi .* Pj)
+                @einsum Eij+=gaabb[p,q,r,s]*Pi[p,q]*Pj[r,s]
+                @einsum Eij-=gabba[p,s,r,q]*Pi[p,q]*Pj[r,s]
+                # Eij += sum(gaabb .* Pi .* Pj)
+                # Eij -= sum(gabba .* Pi .* Pj)
 
                 Pi = Cluster[a].tdm["ca_aa"]
                 Pj = Cluster[b].tdm["ca_bb"]
-
-                Eij += sum(gaabb .* Pi .* Pj)
+                @einsum Eij+=gaabb[p,q,r,s]*Pi[p,q]*Pj[r,s]
+                # Eij += sum(gaabb .* Pi .* Pj)
 
                 Pi = Cluster[a].tdm["ca_bb"]
                 Pj = Cluster[b].tdm["ca_aa"]
-
-                Eij += sum(gaabb .* Pi .* Pj)
+                @einsum Eij+=gaabb[p,q,r,s]*Pi[p,q]*Pj[r,s]
+                # Eij += sum(gaabb .* Pi .* Pj)
 
                 e_d[a, b] = Eij
             end
@@ -203,7 +207,7 @@ function double_counting(blocks, Cluster, eri)
 
     return Eij
 end
-function run_cmf(h, g, blocks, fspace, ecore=0, miter=50)
+function run_cmf(h, g, blocks, fspace, ecore, miter)
     """
     run_cmf(h, g, blocks, fspace, ecore=0, miter=50)
 
@@ -242,16 +246,17 @@ function run_cmf(h, g, blocks, fspace, ecore=0, miter=50)
     @assert n_blocks == length(blocks)
     size_blocks = [length(i) for i in blocks]
 
-    println("\nNumber of Blocks                               :%10i" % n_blocks)
+    println("\nNumber of Blocks                               :%10i" , n_blocks)
     println("\nBlocks :", blocks, "\n")
 
     #initialize the cluster class
     println("Initialize the clusters:")
-    cluster = Dict{Int, Cluster}()
+    cluster = Dict{}()
     for a in 1:n_blocks
+        n_elec=init_fspace[a]
         ha, ga = get_cluster_eri(blocks[a], h, g)  #Form integrals within a cluster
-        cluster[a] = Cluster()
-        cluster[a].init(blocks[a], fspace[a], ha, ga)
+        cluster[a]=Cluster(blocks[a],ha,ga,size(ha, 1),zeros(size(ha, 1),size(ha, 1)),zeros(size(ha, 1)),0,init_fspace[a][1],init_fspace[a][2],0.0,0.0,Dict{},0.0)
+        println(cluster[a])
         println(ha)
     end
 
@@ -273,7 +278,7 @@ function run_cmf(h, g, blocks, fspace, ecore=0, miter=50)
             efci2, ci2 = sparse.linalg.eigsh(H + S2, k = 4, which = "SA")
             println("ham")
             println(H)
-            #println(efci)
+            println(efci2)
             #println(ci.T @ H @ ci)
             #println(ci.T @ S2 @ ci)
             #println(ci)
@@ -282,8 +287,7 @@ function run_cmf(h, g, blocks, fspace, ecore=0, miter=50)
 
         if 1
             if n_a + n_b != 0
-                using PyCall
-                @pyimport pyscf.fci as fci
+                fci=pyimport("pyscf.fci")
                 cisolver = fci.direct_spin0.FCI()
                 efci, ci = cisolver.kernel(ha, ga, norb_a, (n_a, n_b), ecore = 0, nroots = 1, verbose = 100)
                 println(efci)
@@ -308,80 +312,73 @@ function run_cmf(h, g, blocks, fspace, ecore=0, miter=50)
             cluster[a].store_tdm("ca_bb", d2)
         end
 
-        print("Diagonalization of each cluster local Hamiltonian    %16.8f:" % efci)
+        println("Diagonalization of each cluster local Hamiltonian    %16.8f:" % efci)
 
         EE += efci
-
-        print("cluster  :%6d" % (a))
-        print("     Energy                      : %16.10f" % (efci))
+        @printf( "cluster: %6d" , a)
+        @printf(" Energy: %16.10f" , efci)
     end
 
     e_double = double_counting(blocks, cluster, g)
-    print("Ground State nbT-0                             :%16.10f" % (EE + ecore + e_double))
+    @printf("Ground State nbT-0                             :%16.10f" ,(EE + ecore + e_double))
 
     EE_old = EE
     Ecmf = EE + ecore + e_double
     converged = false
 
-    print("\nBegin cluster Optimisation...\n")
-    #print("    Iter                     Energy                    Error ")
-    #print("-------------------------------------------------------------------")
+    println("\nBegin cluster Optimisation...\n")
+    #println("    Iter                     Energy                    Error ")
+    #println("-------------------------------------------------------------------")
     for i in 0:miter
         EE_old = EE
-        print("-------------------------------------------------------------------")
-        print(" CMF Iteration            : %4d" % i)
-        print("-------------------------------------------------------------------")
+        println("-------------------------------------------------------------------")
+        @printf(" CMF Iteration            : %4d" , i)
+        println("-------------------------------------------------------------------")
 
         EE, bl_vec = run_cmf_iter(blocks, cluster, g)
 
-        print("  %4i    Energy: %16.12f         Error:%16.12f" % (i, EE_old, EE - EE_old))
-        print()
+        @printf("  %4i    Energy: %16.12f         Error:%16.12f" ,i, EE_old, EE - EE_old)
+        
         if abs(EE - EE_old) < 1E-8
-            print("")
-            print("CMF energy converged...")
+            println("")
+            println("CMF energy converged...")
 
             e_double = double_counting(blocks, cluster, g)
 
-            print("Sum of Eigenvalues                   :%16.10f" % (EE))
-            print("Nuclear Repulsion                    :%16.10f " % ecore)
-            print("Removing Double counting...          :%16.10f" % (e_double))
-            print("")
+            @printf("Sum of Eigenvalues                   :%16.10f" , EE)
+            @printf("Nuclear Repulsion                    :%16.10f " , ecore)
+            @printf("Removing Double counting...          :%16.10f" ,e_double)
+            println("")
             Ecmf = EE + ecore - e_double
-            #print("SCF                                         :%16.10f"%(Escf))
-            print("CMF                                         :%16.10f" % (Ecmf))
-            print("")
+            #@printf("SCF                                         :%16.10f",Escf)
+            @printf("CMF                                         :%16.10f" ,Ecmf)
+            println("")
             converged = true
             break
         else
             e_double = double_counting(blocks, cluster, g)
-            print("Sum of Eigenvalues                   :%16.10f" % (EE))
-            print("Nuclear Repulsion                    :%16.10f " % ecore)
-            print("Removing Double counting...          :%16.10f" % (e_double))
-            print("")
+            @printf("Sum of Eigenvalues                   :%16.10f" ,EE)
+            @printf("Nuclear Repulsion                    :%16.10f ", ecore)
+            @printf("Removing Double counting...          :%16.10f" ,e_double)
+            println("")
             Ecmf = EE + ecore - e_double
-            #print("SCF                                         :%16.10f"%(Escf))
-            print("CMF                                         :%16.10f" % (Ecmf))
+            #@printf("SCF                                         :%16.10f",Escf)
+            @printf("CMF                                         :%16.10f" ,Ecmf)
         end
     end
 
     if miter == 0
-        print("Energy for the reference state computed")
-        print("Sum of Eigenvalues                   :%16.10f" % (EE))
-        print("Nuclear Repulsion                    :%16.10f " % ecore)
-        print("Removing Double counting...          :%16.10f" % (e_double))
-        print("DPS                                         :%16.10f" % (Ecmf))
-        print(" -------CMF did not converge--------")
+        println("Energy for the reference state computed")
+        @printf("Sum of Eigenvalues                   :%16.10f" ,EE)
+        @printf("Nuclear Repulsion                    :%16.10f",ecore)
+        @printf("Removing Double counting...          :%16.10f" ,e_double)
+        @printf("DPS                                  :%16.10f" ,Ecmf)
+        println(" -------CMF did not converge--------")
     elseif converged == false
-        print(" -------CMF did not converge--------")
+        println(" -------CMF did not converge--------")
     end
 
-    print("-------------------------------------------------------------------")
-    print("                                                                   ")
-    print("                   False modesty is a lie ")
-    print("                                                                      ")
-    print("                      - Ratatouille")
-    print("                                                                   ")
-    print("-------------------------------------------------------------------")
+
 
     #wfn.Ca().copy(psi4.core.Matrix.from_array(C))
     #wfn.Cb().copy(psi4.core.Matrix.from_array(C))
@@ -393,7 +390,7 @@ end
 
 
 function lowdin(S)
-    """he eig function is used to compute the eigenvalues and eigenvectors of a matrix.
+    """the eig function is used to compute the eigenvalues and eigenvectors of a matrix.
      The sortperm function is used to obtain the indices that would sort the eigenvalues in descending order. 
      The diagm function is used to create a diagonal matrix from a vector of diagonal elements."""
     println("Using lowdin orthogonalized orbitals")
