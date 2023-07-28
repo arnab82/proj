@@ -81,4 +81,5 @@ function tensor_decom()
     print("the value of c is",c) 
     return a,b,c,d
 end         
-a,b,c,d=tensor_decom()       
+a,b,c,d=tensor_decom()   
+println(a)    
