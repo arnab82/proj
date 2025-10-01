@@ -3,6 +3,11 @@ using SparseArrays
 using PyCall
 using Einsum
 using Printf
+include("clustering.jl")
+"""
+This code only implements cMF for just 1 iteration without any optimization
+
+"""
 function get_cluster_eri(bl, h, g)
     """This code defines a function get_cluster_eri that takes bl (a list or array),
      h (a 2D matrix), and g (a 4D tensor) as input. It initializes ha and ga as arrays of zeros 
@@ -50,11 +55,6 @@ function get_block_eri_2(block, Cluster, tei, a, b, c, d)
     return g_bl
 end
 function form_Heff(blocks, Cluster, tei)
-    """This code defines a function form_Heff that takes blocks (an array), Cluster (an array of Cluster objects),
-     and tei (a 4D tensor) as input. It initializes VJa and VKa as dictionaries to store the results. 
-     Then, it iterates over the indices a and b and calculates the values for VJa[a, b] and VKa[a, b] 
-     by calling the get_block_eri_2 function and performing the necessary matrix multiplications using the sum function.
-"""
     n_blocks = length(blocks)
     VJa = Dict()
     VKa = Dict()
@@ -63,19 +63,51 @@ function form_Heff(blocks, Cluster, tei)
             if b != a
                 gaabb = get_block_eri_2(blocks, Cluster, tei, a, a, b, b)
                 gabba = get_block_eri_2(blocks, Cluster, tei, a, b, b, a)
-                Jtemp = einsum("prqs,qs->pr", gaabb, Cluster[b].tdm["ca_aa"])
-                Ktemp = einsum("psqr,qs->pr", gabba, Cluster[b].tdm["ca_aa"])
-                # Jtemp = sum(gaabb .* Cluster[b].tdm["ca_aa"], dims=(3, 4))
-                # Ktemp = sum(gabba .* Cluster[b].tdm["ca_aa"], dims=(3, 4))
 
-                VJa[(a, b)] = Jtemp#coulomb integral
-                VKa[(a, b)] = Ktemp#exchange integral
+                # Initialize matrices for Jtemp and Ktemp
+                Jtemp = zeros(size(gaabb, 1), size(gaabb, 2))
+                Ktemp = zeros(size(gabba, 1), size(gabba, 4))
+
+                # ca_aa density matrix
+                dens = Cluster[b].tdm["ca_aa"]
+                # @einsum Jtemp[p,r] := gaabb[p,r,q,s] * Cluster[b].tdm["ca_aa"][q,s]
+                # @einsum Ktemp[p,r] := gabba[p,s,q,r] * Cluster[b].tdm["ca_aa"][q,s]
+                
+                # Perform contraction equivalent to einsum "prqs, qs->pr"
+                for p in 1:size(gaabb, 1)
+                    for r in 1:size(gaabb, 2)
+                        sum_val = 0.0
+                        for q in 1:size(gaabb, 3)
+                            for s in 1:size(gaabb, 4)
+                                sum_val += gaabb[p, r, q, s] * dens[q, s]
+                            end
+                        end
+                        Jtemp[p, r] = sum_val
+                    end
+                end
+
+                # Perform contraction equivalent to einsum "psqr, qs->pr"
+                for p in 1:size(gabba, 1)
+                    for r in 1:size(gabba, 4)
+                        sum_val = 0.0
+                        for s in 1:size(gabba, 2)
+                            for q in 1:size(gabba, 3)
+                                sum_val += gabba[p, s, q, r] * dens[q, s]
+                            end
+                        end
+                        Ktemp[p, r] = sum_val
+                    end
+                end
+
+                VJa[(a, b)] = Jtemp
+                VKa[(a, b)] = Ktemp
             end
         end
     end
-
     return VJa, VKa
 end
+
+
 function run_cmf_iter(blocks, Cluster, tei)
     """This code defines a function run_cmf_iter that takes blocks (an array), Cluster (an array of Cluster objects),
      and tei (a 4D tensor) as input. It initializes hnew and mat as dictionaries to store intermediate results. 
@@ -135,8 +167,8 @@ function run_cmf_iter(blocks, Cluster, tei)
         end
         #make the density matrix
         d1, d2 = cisolver.make_rdm1s(ci, size(ha, 2), (n_a, n_b))
-        Cluster[a].store_tdm("ca_aa", d1)
-        Cluster[a].store_tdm("ca_bb", d2)
+        store_tdm!(Cluster[a],"ca_aa", d1)
+        store_tdm!(Cluster[a],"ca_bb", d2)
 
         if damp
             cv = reshape(ci, (1, fci_dim))
@@ -144,7 +176,7 @@ function run_cmf_iter(blocks, Cluster, tei)
             ee, ci = eigen(0.5 * d2 + 0.5 * dd)
         end
 
-        Cluster[a].tucker_vecs(ci, efci)#only one P vector is considered
+        tucker_vecs!(Cluster[a],ci, efci)#only one P vector is considered
 
         EE += efci
 
@@ -207,7 +239,7 @@ function double_counting(blocks, Cluster, eri)
 
     return Eij
 end
-function run_cmf(h, g, blocks, fspace, ecore, miter)
+function run_cmf(h, g, blocks, fspace, ecore, miter=50)
     """
     run_cmf(h, g, blocks, fspace, ecore=0, miter=50)
 
@@ -255,7 +287,7 @@ function run_cmf(h, g, blocks, fspace, ecore, miter)
     for a in 1:n_blocks
         n_elec=init_fspace[a]
         ha, ga = get_cluster_eri(blocks[a], h, g)  #Form integrals within a cluster
-        cluster[a]=Cluster(blocks[a],ha,ga,size(ha, 1),zeros(size(ha, 1),size(ha, 1)),zeros(size(ha, 1)),0,init_fspace[a][1],init_fspace[a][2],0.0,0.0,Dict{},0.0)
+        cluster[a] = Cluster(blocks[a], n_elec, ha, ga; S2=0.0)
         println(cluster[a])
         println(ha)
     end
@@ -272,7 +304,7 @@ function run_cmf(h, g, blocks, fspace, ecore, miter)
         n_a = fspace[a][1]
         n_b = fspace[a][2]
 
-        if 0
+        if false
             H = run_fci(ha, ga, norb_a, n_a, n_b)
             S2 = form_S2(norb_a, n_a, n_b)
             efci2, ci2 = sparse.linalg.eigsh(H + S2, k = 4, which = "SA")
@@ -285,8 +317,8 @@ function run_cmf(h, g, blocks, fspace, ecore, miter)
             #ci = ci.reshape(nCr(norb_a,n_a),nCr(norb_a,n_b))
         end
 
-        if 1
-            if n_a + n_b != 0
+        if true
+            if (n_a + n_b) != 0
                 fci=pyimport("pyscf.fci")
                 cisolver = fci.direct_spin0.FCI()
                 efci, ci = cisolver.kernel(ha, ga, norb_a, (n_a, n_b), ecore = 0, nroots = 1, verbose = 100)
@@ -304,15 +336,15 @@ function run_cmf(h, g, blocks, fspace, ecore, miter)
             end
 
             ## fci
-            cluster[a].tucker_vecs(ci, efci) #Only one P vector right now
+            tucker_vecs!(cluster[a],ci, efci) #Only one P vector right now
 
             ## make tdm
             d1, d2 = cisolver.make_rdm1s(ci, size(ha, 2), (n_a, n_b))
-            cluster[a].store_tdm("ca_aa", d1)
-            cluster[a].store_tdm("ca_bb", d2)
+            store_tdm!(cluster[a],"ca_aa", d1)
+            store_tdm!(cluster[a],"ca_bb", d2)
         end
 
-        println("Diagonalization of each cluster local Hamiltonian    %16.8f:" % efci)
+        println("Diagonalization of each cluster local Hamiltonian    %16.8f:" , efci)
 
         EE += efci
         @printf( "cluster: %6d" , a)
@@ -330,16 +362,15 @@ function run_cmf(h, g, blocks, fspace, ecore, miter)
     #println("    Iter                     Energy                    Error ")
     #println("-------------------------------------------------------------------")
     for i in 0:miter
-        EE_old = EE
         println("-------------------------------------------------------------------")
         @printf(" CMF Iteration            : %4d" , i)
         println("-------------------------------------------------------------------")
 
         EE, bl_vec = run_cmf_iter(blocks, cluster, g)
-
-        @printf("  %4i    Energy: %16.12f         Error:%16.12f" ,i, EE_old, EE - EE_old)
+        error = EE - EE_old
+        @printf("  %4i    Energy: %16.12f         Error:%16.12f" ,i, EE_old, error)
         
-        if abs(EE - EE_old) < 1E-8
+        if abs(error) < 1E-15
             println("")
             println("CMF energy converged...")
 

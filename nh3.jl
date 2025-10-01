@@ -1,6 +1,6 @@
-include("clustering.jl")
 include("cmf.jl")
 include("pyscfhelper.jl")
+include("clustering.jl")
 using PyCall
 pyscf=pyimport("pyscf")
 pyscf.lib.num_threads(1)
